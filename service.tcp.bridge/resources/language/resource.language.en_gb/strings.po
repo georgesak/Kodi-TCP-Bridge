@@ -1,0 +1,37 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: service.tcp.bridge\n"
+"Report-Msgid-Bugs-To: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en_GB\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgctxt "#30000"
+msgid "Network"
+msgstr ""
+
+msgctxt "#30001"
+msgid "Bind address (0.0.0.0 for all interfaces)"
+msgstr ""
+
+msgctxt "#30002"
+msgid "Listen port"
+msgstr ""
+
+msgctxt "#30003"
+msgid "Feedback"
+msgstr ""
+
+msgctxt "#30004"
+msgid "Progress update interval while playing (seconds)"
+msgstr ""
+
+msgctxt "#30005"
+msgid "Heartbeat interval (seconds, 0 = off)"
+msgstr ""
+
+msgctxt "#30006"
+msgid "Notify on screen when a client connects"
+msgstr ""

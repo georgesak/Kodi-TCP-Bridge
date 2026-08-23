@@ -1,0 +1,14 @@
+# Build output - regenerate with build.ps1
+dist/
+
+# Python bytecode from the syntax check
+__pycache__/
+*.py[cod]
+
+# Editor and OS noise
+.vscode/
+.idea/
+.claude/
+.gemini/
+Thumbs.db
+desktop.ini

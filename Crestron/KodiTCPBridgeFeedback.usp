@@ -1,0 +1,313 @@
+/*******************************************************************************
+    Kodi TCP Bridge - Feedback Parser
+    For the Kodi add-on "service.tcp.bridge"
+
+    Wire the TCP/IP Client's rx$ straight into From_Device$. No Gather symbol
+    is needed - a BUFFER_INPUT accumulates data and REMOVE() only pulls out
+    lines that have arrived complete, so a reply split across two TCP packets
+    is reassembled for free.
+
+    Author: Georges Khalil
+*******************************************************************************/
+
+#SYMBOL_NAME "Kodi TCP Bridge Feedback"
+#HINT "Parses CR-delimited feedback from the Kodi TCP Bridge add-on"
+#CATEGORY "46" "Kodi"
+#DEFAULT_VOLATILE
+//#ENABLE_STACK_CHECKING
+//#ENABLE_TRACE
+
+#DEFINE_CONSTANT MAX_LINE 1023
+#DEFINE_CONSTANT RX_BUFFER 1024
+
+/*******************************************************************************
+    I/O
+*******************************************************************************/
+
+BUFFER_INPUT From_Device$[RX_BUFFER];
+
+DIGITAL_OUTPUT Is_Online;
+DIGITAL_OUTPUT Is_Playing;
+DIGITAL_OUTPUT Is_Paused;
+DIGITAL_OUTPUT Is_Stopped;
+DIGITAL_OUTPUT Is_Scanning;
+DIGITAL_OUTPUT Is_Muted;
+DIGITAL_OUTPUT No_Player_Error;
+
+ANALOG_OUTPUT Progress;
+ANALOG_OUTPUT Volume;
+
+STRING_OUTPUT Title$;
+STRING_OUTPUT Subtitle$;
+STRING_OUTPUT Thumbnail$;
+STRING_OUTPUT Elapsed$;
+STRING_OUTPUT Duration$;
+STRING_OUTPUT Media_Type$;
+STRING_OUTPUT Last_Error$;
+
+INTEGER_PARAMETER Link_Timeout_Seconds;
+
+#BEGIN_PARAMETER_PROPERTIES Link_Timeout_Seconds
+    propValidUnits = unitDecimal;
+    propDefaultUnit = unitDecimal;
+    propBounds = 0d, 300d;
+    propDefaultValue = 45d;
+    propShortDescription = "Seconds of silence before Is_Online drops. 0 disables. Set the add-on's heartbeat to about a third of this.";
+#END_PARAMETER_PROPERTIES
+
+/*******************************************************************************
+    Helpers
+*******************************************************************************/
+
+/*
+    Analogs are unsigned 16-bit and PROGRESS runs past 32767, so this checks
+    for overflow before each step rather than accumulating in a LONG_INTEGER
+    and narrowing at the end (which costs a data-loss warning). Stops at the
+    first non-digit and clamps instead of wrapping.
+*/
+INTEGER_FUNCTION ParseNumber(STRING value$)
+{
+    INTEGER i;
+    INTEGER ch;
+    INTEGER digit;
+    INTEGER done;
+    INTEGER total;
+
+    total = 0;
+    done = 0;
+    i = 1;
+
+    WHILE((i <= LEN(value$)) && (done = 0))
+    {
+        ch = BYTE(value$, i);
+
+        IF((ch >= 48) && (ch <= 57))
+        {
+            digit = ch - 48;
+
+            /* 6553 * 10 + 5 is the largest value that still fits. */
+            IF(total > 6553)
+            {
+                total = 65535;
+                done = 1;
+            }
+            ELSE
+            {
+                total = total * 10;
+
+                IF(total > (65535 - digit))
+                {
+                    total = 65535;
+                    done = 1;
+                }
+                ELSE
+                    total = total + digit;
+            }
+        }
+        ELSE
+            done = 1;
+
+        i = i + 1;
+    }
+
+    RETURN(total);
+}
+
+/*
+    A wait label must be defined by a WAIT statement that appears earlier in
+    the source than any CANCELWAIT referencing it, so the WAIT lives in its
+    own function above the one that restarts it.
+*/
+FUNCTION StartWatchdog()
+{
+    IF(Link_Timeout_Seconds > 0)
+    {
+        WAIT(Link_Timeout_Seconds * 100, LinkWatchdog)
+        {
+            Is_Online = 0;
+        }
+    }
+}
+
+FUNCTION KickWatchdog()
+{
+    IF(Link_Timeout_Seconds > 0)
+    {
+        CANCELWAIT(LinkWatchdog);
+        StartWatchdog();
+    }
+}
+
+FUNCTION ProcessLine(STRING line$)
+{
+    STRING key$[32];
+    STRING value$[MAX_LINE];
+    INTEGER pos;
+
+    /* Trim any stray CR/LF the framing left behind. */
+    WHILE((LEN(line$) > 0) &&
+          ((BYTE(line$, LEN(line$)) = 13) || (BYTE(line$, LEN(line$)) = 10)))
+        line$ = LEFT(line$, LEN(line$) - 1);
+
+    IF(LEN(line$) > 0)
+    {
+        pos = FIND("=", line$);
+
+        IF(pos > 0)
+        {
+            key$ = LEFT(line$, pos - 1);
+            value$ = MID(line$, pos + 1, LEN(line$) - pos);
+        }
+        ELSE
+        {
+            key$ = line$;
+            value$ = "";
+        }
+
+        TRACE("Key: %s", key$);
+        TRACE("Value: %s", value$);
+
+        /* --- transport state ------------------------------------------- */
+        IF(key$ = "STATE")
+        {
+            IF(value$ = "PLAYING")
+            {
+                Is_Playing = 1;
+                Is_Paused = 0;
+                Is_Stopped = 0;
+            }
+            ELSE IF(value$ = "PAUSED")
+            {
+                Is_Playing = 0;
+                Is_Paused = 1;
+                Is_Stopped = 0;
+            }
+            ELSE IF(value$ = "STOPPED")
+            {
+                Is_Playing = 0;
+                Is_Paused = 0;
+                Is_Stopped = 1;
+                Is_Scanning = 0;
+            }
+        }
+
+        /* Anything other than stopped or normal play is a scan. */
+        ELSE IF(key$ = "SPEED")
+        {
+            IF((value$ = "0") || (value$ = "1"))
+                Is_Scanning = 0;
+            ELSE
+                Is_Scanning = 1;
+        }
+
+        /* --- now playing ----------------------------------------------- */
+        ELSE IF(key$ = "TITLE")
+            Title$ = value$;
+
+        ELSE IF(key$ = "SUBTITLE")
+            Subtitle$ = value$;
+
+        ELSE IF(key$ = "THUMBNAIL")
+            Thumbnail$ = value$;
+
+        ELSE IF(key$ = "MEDIATYPE")
+            Media_Type$ = value$;
+
+        ELSE IF(key$ = "TIME")
+            Elapsed$ = value$;
+
+        ELSE IF(key$ = "DURATION")
+            Duration$ = value$;
+
+        /* Already scaled 0-65535 by the add-on; straight to a gauge join. */
+        ELSE IF(key$ = "PROGRESS")
+            Progress = ParseNumber(value$);
+
+        /* --- audio ------------------------------------------------------ */
+        ELSE IF(key$ = "VOLUME")
+            Volume = ParseNumber(value$);
+
+        ELSE IF(key$ = "MUTE")
+        {
+            IF(value$ = "1")
+                Is_Muted = 1;
+            ELSE
+                Is_Muted = 0;
+        }
+
+        /* --- link and errors -------------------------------------------- */
+        ELSE IF(key$ = "READY")
+        {
+            /* Full state dump just landed; the link is synced. */
+            Is_Online = 1;
+            Last_Error$ = "";
+        }
+
+        ELSE IF(key$ = "ERR")
+        {
+            Last_Error$ = value$;
+            IF(value$ = "NOPLAYER")
+                PULSE(20, No_Player_Error);
+        }
+    }
+}
+
+/*******************************************************************************
+    Events
+*******************************************************************************/
+
+THREADSAFE CHANGE From_Device$
+{
+    STRING line$[MAX_LINE];
+
+    /*
+        Any traffic at all proves the link is alive, so restart the watchdog
+        before parsing. HEARTBEAT needs no handler of its own - arriving is
+        the entire point of it.
+    */
+    Is_Online = 1;
+    KickWatchdog();
+
+    WHILE(FIND("\x0D", From_Device$) > 0)
+    {
+        line$ = REMOVE("\x0D", From_Device$);
+        ProcessLine(line$);
+    }
+
+    /*
+        A line longer than the buffer with no terminator means the far end is
+        not speaking our protocol. Dump it rather than wedging the parser.
+    */
+    IF(LEN(From_Device$) >= RX_BUFFER)
+    {
+        CLEARBUFFER(From_Device$);
+        TRACE("Kodi TCP Bridge: oversized line discarded");
+    }
+}
+
+/*******************************************************************************
+    Startup
+*******************************************************************************/
+
+FUNCTION Main()
+{
+    WAITFORINITIALIZATIONCOMPLETE();
+
+    Is_Online = 0;
+    Is_Playing = 0;
+    Is_Paused = 0;
+    Is_Stopped = 1;
+    Is_Scanning = 0;
+    Is_Muted = 0;
+
+    Progress = 0;
+    Volume = 0;
+
+    Title$ = "";
+    Subtitle$ = "";
+    Thumbnail$ = "";
+    Elapsed$ = "00:00:00";
+    Duration$ = "00:00:00";
+    Media_Type$ = "";
+    Last_Error$ = "";
+}
